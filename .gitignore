@@ -1,3 +1,16 @@
 uploads/
 temp/
 media/
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+.idea/
+*.log
+*.sqlite3
+*.env
+*.bak
+*.swp
+*.swo
+*.tmp
+
