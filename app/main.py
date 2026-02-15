@@ -15,13 +15,24 @@ app = FastAPI(
 )
 
 # Configure CORS
+# app.add_middleware(
+#     CORSMiddleware,
+#     # allow_origins=settings.CORS_ORIGINS,
+#     allow_origins=["*"],  # or ["http://localhost:5500"] if using Live Server
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
+
+# Configure CORS - CRITICAL: Must be before other middleware
 app.add_middleware(
     CORSMiddleware,
-    # allow_origins=settings.CORS_ORIGINS,
-    allow_origins=["*"],  # or ["http://localhost:5500"] if using Live Server
+    allow_origins=["*"],  # In production, specify exact origins
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=18000,  # Cache preflight requests for 1 hour
 )
 
 
