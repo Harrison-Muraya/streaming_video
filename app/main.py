@@ -14,37 +14,23 @@ app = FastAPI(
     description="Video Streaming API with ML Recommendations"
 )
 
-# Configure CORS - Allow your Django frontend
+# Configure CORS - ONLY ONE CORS MIDDLEWARE
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://192.168.100.8:8000",  # Your Django frontend
-        "http://192.168.100.54",       # Your FastAPI server (for testing)
-        "http://localhost:8000",       # Local testing
+        "http://192.168.100.8:8000",
+        "http://192.168.100.54",
+        "http://localhost:8000",
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
     expose_headers=["*"],
-    max_age=18000,
 )
-
-# Configure CORS - CRITICAL: Must be before other middleware
-# app.add_middleware(
-#     CORSMiddleware,
-#     allow_origins=["*"],  # In production, specify exact origins
-#     allow_credentials=True,
-#     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-#     allow_headers=["*"],
-#     expose_headers=["*"],
-#     max_age=18000,  # Cache preflight requests for 1 hour
-# )
-
 
 # Mount static files
 if os.path.exists(settings.MEDIA_ROOT):
     app.mount("/media", StaticFiles(directory=settings.MEDIA_ROOT), name="media")
-
 
 @app.on_event("startup")
 async def startup_event():
@@ -55,12 +41,10 @@ async def startup_event():
     print(f"✅ Server running on http://{settings.HOST}:{settings.PORT}")
     print(f"📚 API Docs: http://{settings.HOST}:{settings.PORT}/docs")
 
-
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown"""
     print("👋 Shutting down Streaming API...")
-
 
 @app.get("/")
 async def root():
@@ -71,7 +55,6 @@ async def root():
         "redoc": "/redoc"
     }
 
-
 @app.get("/health")
 async def health_check():
     return {
@@ -79,10 +62,8 @@ async def health_check():
         "version": settings.VERSION
     }
 
-
 # Include API v1 router
 app.include_router(api_router, prefix="/api/v1")
-
 
 if __name__ == "__main__":
     import uvicorn
@@ -92,3 +73,87 @@ if __name__ == "__main__":
         port=settings.PORT,
         reload=settings.DEBUG
     )
+
+
+# from fastapi import FastAPI
+# from fastapi.middleware.cors import CORSMiddleware
+# from fastapi.staticfiles import StaticFiles
+# from app.config import settings
+# from app.database import create_tables
+# from app.api.v1 import api_router
+# import os
+
+# # Create FastAPI app
+# app = FastAPI(
+#     title=settings.APP_NAME,
+#     version=settings.VERSION,
+#     debug=settings.DEBUG,
+#     description="Video Streaming API with ML Recommendations"
+# )
+
+# # Configure CORS - Allow your Django frontend
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=[
+#         "http://192.168.100.8:8000",  # Your Django frontend
+#         "http://192.168.100.54",       # Your FastAPI server (for testing)
+#         "http://localhost:8000",       # Local testing
+#     ],
+#     allow_credentials=True,
+#     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+#     allow_headers=["*"],
+#     expose_headers=["*"],
+#     max_age=18000,
+# )
+
+# # Mount static files
+# if os.path.exists(settings.MEDIA_ROOT):
+#     app.mount("/media", StaticFiles(directory=settings.MEDIA_ROOT), name="media")
+
+
+# @app.on_event("startup")
+# async def startup_event():
+#     """Initialize app on startup"""
+#     print("🚀 Starting Streaming API...")
+#     create_tables()
+#     print("✅ Database tables created/verified")
+#     print(f"✅ Server running on http://{settings.HOST}:{settings.PORT}")
+#     print(f"📚 API Docs: http://{settings.HOST}:{settings.PORT}/docs")
+
+
+# @app.on_event("shutdown")
+# async def shutdown_event():
+#     """Cleanup on shutdown"""
+#     print("👋 Shutting down Streaming API...")
+
+
+# @app.get("/")
+# async def root():
+#     return {
+#         "message": "Welcome to Streaming API",
+#         "version": settings.VERSION,
+#         "docs": "/docs",
+#         "redoc": "/redoc"
+#     }
+
+
+# @app.get("/health")
+# async def health_check():
+#     return {
+#         "status": "healthy",
+#         "version": settings.VERSION
+#     }
+
+
+# # Include API v1 router
+# app.include_router(api_router, prefix="/api/v1")
+
+
+# if __name__ == "__main__":
+#     import uvicorn
+#     uvicorn.run(
+#         "app.main:app",
+#         host=settings.HOST,
+#         port=settings.PORT,
+#         reload=settings.DEBUG
+#     )

@@ -51,3 +51,9 @@ sudo systemctl status celery
 
 @REM Check Nginx
 sudo systemctl status nginx
+
+
+@REM while using deploy.sh script for deployment on ubuntu server, use the following command to run the script:
+chmod +x /var/www/streaming_video/deploy.sh
+./deploy.sh
+"""
