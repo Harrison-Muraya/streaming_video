@@ -14,7 +14,7 @@ source venv/bin/activate
 
 # Update dependencies
 echo "📦 Updating dependencies..."
-pip install -r requirements.txt --upgrade
+#pip install -r requirements.txt --upgrade
 
 # Run migrations (uncomment if you use Alembic)
 # echo "🗄️  Running database migrations..."
