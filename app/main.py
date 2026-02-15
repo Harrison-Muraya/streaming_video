@@ -14,26 +14,31 @@ app = FastAPI(
     description="Video Streaming API with ML Recommendations"
 )
 
-# Configure CORS
-# app.add_middleware(
-#     CORSMiddleware,
-#     # allow_origins=settings.CORS_ORIGINS,
-#     allow_origins=["*"],  # or ["http://localhost:5500"] if using Live Server
-#     allow_credentials=True,
-#     allow_methods=["*"],
-#     allow_headers=["*"],
-# )
-
-# Configure CORS - CRITICAL: Must be before other middleware
+# Configure CORS - Allow your Django frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify exact origins
+    allow_origins=[
+        "http://192.168.100.8:8000",  # Your Django frontend
+        "http://192.168.100.54",       # Your FastAPI server (for testing)
+        "http://localhost:8000",       # Local testing
+    ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
     expose_headers=["*"],
-    max_age=18000,  # Cache preflight requests for 1 hour
+    max_age=18000,
 )
+
+# Configure CORS - CRITICAL: Must be before other middleware
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=["*"],  # In production, specify exact origins
+#     allow_credentials=True,
+#     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+#     allow_headers=["*"],
+#     expose_headers=["*"],
+#     max_age=18000,  # Cache preflight requests for 1 hour
+# )
 
 
 # Mount static files

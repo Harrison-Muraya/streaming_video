@@ -25,3 +25,29 @@ Remove-Item -Recurse -Force app\__pycache__, app\models\__pycache__, app\service
 
 
 python test_video_upload.py C:\Users\HARRISON MURAYA\Desktop\movies\Rango\Rango.mp4
+
+
+@REM commands for maintaining the server on ubuntu server:
+sudo apt update
+sudo chown -R $harris:harris /var/www/kena
+git pull origin main
+source .venv/bin/activate
+pip install -r requirements.txt
+
+@REM Restart FastAPI application
+sudo systemctl restart streaming_video
+
+@REM Restart Celery worker
+sudo systemctl restart celery
+
+@REM Restart Nginx (only if nginx config changed)
+sudo systemctl restart nginx
+
+@REM Check FastAPI
+sudo systemctl status streaming_video
+
+@REM Check Celery
+sudo systemctl status celery
+
+@REM Check Nginx
+sudo systemctl status nginx
