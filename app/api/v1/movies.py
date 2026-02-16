@@ -15,6 +15,208 @@ router = APIRouter()
 
 
 # ============================================
+# GENRE ENDPOINTS - MUST COME BEFORE /{movie_id}
+# ============================================
+
+@router.post("/genres", response_model=GenreResponse, status_code=status.HTTP_201_CREATED)
+async def create_genre(
+    genre_data: GenreCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin)
+):
+    """
+    Create a new genre (Admin only)
+    
+    - **name**: Genre name
+    - **slug**: URL-friendly slug
+    """
+    genre = GenreService.create_genre(genre_data.name, genre_data.slug, db)
+    return genre
+
+
+@router.get("/genres", response_model=List[GenreResponse])
+async def get_genres(
+    db: Session = Depends(get_db)
+):
+    """
+    Get all genres
+    
+    All users can access this endpoint
+    """
+    genres = GenreService.get_all_genres(db)
+    return genres
+
+
+@router.get("/genres/{genre_id}/movies", response_model=MovieList)
+async def get_movies_by_genre(
+    genre_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db)
+):
+    """
+    Get all movies in a specific genre
+    """
+    # Verify genre exists
+    GenreService.get_genre_by_id(genre_id, db)
+    
+    skip = (page - 1) * page_size
+    movies, total = MovieService.get_movies(
+        db=db,
+        skip=skip,
+        limit=page_size,
+        genre_id=genre_id
+    )
+    
+    total_pages = math.ceil(total / page_size)
+    
+    return MovieList(
+        movies=movies,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages
+    )
+
+
+@router.get("/genres/slug/{slug}", response_model=GenreResponse)
+async def get_genre_by_slug(
+    slug: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Get genre by slug
+    """
+    genre = GenreService.get_genre_by_slug(slug, db)
+    return genre
+
+
+@router.get("/genres/{genre_id}", response_model=GenreResponse)
+async def get_genre(
+    genre_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Get genre by ID
+    """
+    genre = GenreService.get_genre_by_id(genre_id, db)
+    return genre
+
+
+@router.delete("/genres/{genre_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_genre(
+    genre_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin)
+):
+    """
+    Delete a genre (Admin only)
+    """
+    GenreService.delete_genre(genre_id, db)
+    return None
+
+
+# ============================================
+# SPECIAL COLLECTIONS - MUST COME BEFORE /{movie_id}
+# ============================================
+
+@router.get("/collections/featured", response_model=List[MovieResponse])
+async def get_featured_movies(
+    limit: int = Query(10, ge=1, le=50),
+    db: Session = Depends(get_db)
+):
+    """
+    Get featured movies
+    """
+    movies, _ = MovieService.get_movies(
+        db=db,
+        skip=0,
+        limit=limit,
+        is_featured=True,
+        status="ready"
+    )
+    return movies
+
+
+@router.get("/collections/trending", response_model=List[MovieResponse])
+async def get_trending_movies(
+    limit: int = Query(10, ge=1, le=50),
+    db: Session = Depends(get_db)
+):
+    """
+    Get trending movies
+    """
+    movies, _ = MovieService.get_movies(
+        db=db,
+        skip=0,
+        limit=limit,
+        is_trending=True,
+        status="ready"
+    )
+    return movies
+
+
+@router.get("/collections/recent", response_model=List[MovieResponse])
+async def get_recent_movies(
+    limit: int = Query(10, ge=1, le=50),
+    db: Session = Depends(get_db)
+):
+    """
+    Get recently added movies
+    """
+    movies, _ = MovieService.get_movies(
+        db=db,
+        skip=0,
+        limit=limit,
+        status="ready"
+    )
+    return movies
+
+
+@router.get("/with-progress", response_model=MovieList)
+async def get_movies_with_progress(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    search: Optional[str] = Query(None),
+    genre_id: Optional[int] = Query(None),
+    status: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get movies with user's watch progress included
+    
+    Same as GET /movies but includes:
+    - watch_progress: Percentage watched
+    - last_position: Resume position
+    - completed: Whether user finished
+    - user_rating: User's rating
+    - average_rating: Overall rating
+    """
+    skip = (page - 1) * page_size
+    
+    movies, total = MovieService.get_movies_with_progress(
+        db=db,
+        user_id=current_user.id,
+        skip=skip,
+        limit=page_size,
+        search=search,
+        genre_id=genre_id,
+        status=status
+    )
+    
+    total_pages = math.ceil(total / page_size)
+    
+    return MovieList(
+        movies=movies,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages
+    )
+
+
+# ============================================
 # MOVIE ENDPOINTS
 # ============================================
 
@@ -81,6 +283,10 @@ async def get_movies(
         total_pages=total_pages
     )
 
+
+# ============================================
+# DYNAMIC MOVIE ROUTES - MUST BE LAST
+# ============================================
 
 @router.get("/{movie_id}", response_model=MovieResponse)
 async def get_movie(
@@ -195,206 +401,3 @@ async def get_stream_url(
         "file_size": video_file.file_size,
         "bitrate": video_file.bitrate
     }
-
-
-# ============================================
-# GENRE ENDPOINTS
-# ============================================
-
-@router.post("/genres", response_model=GenreResponse, status_code=status.HTTP_201_CREATED)
-async def create_genre(
-    genre_data: GenreCreate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_admin)
-):
-    """
-    Create a new genre (Admin only)
-    
-    - **name**: Genre name
-    - **slug**: URL-friendly slug
-    """
-    genre = GenreService.create_genre(genre_data.name, genre_data.slug, db)
-    return genre
-
-
-@router.get("/genres", response_model=List[GenreResponse])
-async def get_genres(
-    db: Session = Depends(get_db)
-):
-    """
-    Get all genres
-    
-    All users can access this endpoint
-    """
-    genres = GenreService.get_all_genres(db)
-    return genres
-
-
-@router.get("/genres/{genre_id}", response_model=GenreResponse)
-async def get_genre(
-    genre_id: int,
-    db: Session = Depends(get_db)
-):
-    """
-    Get genre by ID
-    """
-    genre = GenreService.get_genre_by_id(genre_id, db)
-    return genre
-
-
-@router.get("/genres/slug/{slug}", response_model=GenreResponse)
-async def get_genre_by_slug(
-    slug: str,
-    db: Session = Depends(get_db)
-):
-    """
-    Get genre by slug
-    """
-    genre = GenreService.get_genre_by_slug(slug, db)
-    return genre
-
-
-@router.delete("/genres/{genre_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_genre(
-    genre_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_admin)
-):
-    """
-    Delete a genre (Admin only)
-    """
-    GenreService.delete_genre(genre_id, db)
-    return None
-
-
-@router.get("/genres/{genre_id}/movies", response_model=MovieList)
-async def get_movies_by_genre(
-    genre_id: int,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
-    db: Session = Depends(get_db)
-):
-    """
-    Get all movies in a specific genre
-    """
-    # Verify genre exists
-    GenreService.get_genre_by_id(genre_id, db)
-    
-    skip = (page - 1) * page_size
-    movies, total = MovieService.get_movies(
-        db=db,
-        skip=skip,
-        limit=page_size,
-        genre_id=genre_id
-    )
-    
-    total_pages = math.ceil(total / page_size)
-    
-    return MovieList(
-        movies=movies,
-        total=total,
-        page=page,
-        page_size=page_size,
-        total_pages=total_pages
-    )
-
-
-# ============================================
-# SPECIAL COLLECTIONS
-# ============================================
-
-@router.get("/collections/featured", response_model=List[MovieResponse])
-async def get_featured_movies(
-    limit: int = Query(10, ge=1, le=50),
-    db: Session = Depends(get_db)
-):
-    """
-    Get featured movies
-    """
-    movies, _ = MovieService.get_movies(
-        db=db,
-        skip=0,
-        limit=limit,
-        is_featured=True,
-        status="ready"
-    )
-    return movies
-
-
-@router.get("/collections/trending", response_model=List[MovieResponse])
-async def get_trending_movies(
-    limit: int = Query(10, ge=1, le=50),
-    db: Session = Depends(get_db)
-):
-    """
-    Get trending movies
-    """
-    movies, _ = MovieService.get_movies(
-        db=db,
-        skip=0,
-        limit=limit,
-        is_trending=True,
-        status="ready"
-    )
-    return movies
-
-
-@router.get("/collections/recent", response_model=List[MovieResponse])
-async def get_recent_movies(
-    limit: int = Query(10, ge=1, le=50),
-    db: Session = Depends(get_db)
-):
-    """
-    Get recently added movies
-    """
-    movies, _ = MovieService.get_movies(
-        db=db,
-        skip=0,
-        limit=limit,
-        status="ready"
-    )
-    return movies
-
-
-
-@router.get("/with-progress", response_model=MovieList)
-async def get_movies_with_progress(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
-    search: Optional[str] = Query(None),
-    genre_id: Optional[int] = Query(None),
-    status: Optional[str] = Query(None),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
-):
-    """
-    Get movies with user's watch progress included
-    
-    Same as GET /movies but includes:
-    - watch_progress: Percentage watched
-    - last_position: Resume position
-    - completed: Whether user finished
-    - user_rating: User's rating
-    - average_rating: Overall rating
-    """
-    skip = (page - 1) * page_size
-    
-    movies, total = MovieService.get_movies_with_progress(
-        db=db,
-        user_id=current_user.id,
-        skip=skip,
-        limit=page_size,
-        search=search,
-        genre_id=genre_id,
-        status=status
-    )
-    
-    total_pages = math.ceil(total / page_size)
-    
-    return MovieList(
-        movies=movies,
-        total=total,
-        page=page,
-        page_size=page_size,
-        total_pages=total_pages
-    )

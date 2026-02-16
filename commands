@@ -29,7 +29,8 @@ python test_video_upload.py C:\Users\HARRISON MURAYA\Desktop\movies\Rango\Rango.
 
 @REM commands for maintaining the server on ubuntu server:
 sudo apt update
-sudo chown -R $harris:harris /var/www/kena
+sudo chown -R harr:harr /var/www/streaming_video
+cd /var/www/streaming_video
 git pull origin main
 source .venv/bin/activate
 pip install -r requirements.txt
