@@ -71,35 +71,48 @@ def _build_ffmpeg_command(device_path: str, hls_dir: str) -> list:
         # Linux V4L2 — DroidCam, capture cards (/dev/video0, /dev/video1 ...)
         input_args = ["-f", "v4l2", "-i", device_path]
 
-    # ── Audio: use silent source if snd_aloop not loaded (DroidCam fallback) ─
+    # ── Audio source args (must come BEFORE encoding args) ───────────────────
     if _check_audio_available():
-        audio_args = ["-c:a", "aac", "-b:a", "128k", "-ar", "44100"]
+        # snd_aloop loaded — real audio from DroidCam
+        pre_input_audio  = []
+        post_input_audio = ["-c:a", "aac", "-b:a", "128k", "-ar", "44100"]
+        map_args         = []
     else:
-        audio_args = [
-            "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
-            "-c:a", "aac", "-b:a", "64k", "-ar", "44100",
-        ]
+        # No audio device — generate silent audio as second input
+        pre_input_audio  = ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
+        post_input_audio = ["-c:a", "aac", "-b:a", "64k", "-ar", "44100"]
+        map_args         = ["-map", "0:v", "-map", "1:a"]
 
     # ── Full FFmpeg command ───────────────────────────────────────────────────
+    # Key low-latency settings:
+    #   NO -re flag          → don't throttle input, process as fast as possible
+    #   ultrafast preset     → lowest CPU encode latency
+    #   bufsize = 1x bitrate → small buffer = less delay before output
+    #   hls_time 1           → 1-second segments (was 2) = less wait per segment
+    #   hls_list_size 3      → only 3 segments in playlist = ~3s total buffer
+    #   omit_endlist         → tell players this is a live stream, don't wait for end
     cmd = [
         ffmpeg_bin,
-        "-re",
-        *input_args,
+        *input_args,            # video input (no -re = no artificial throttle)
+        *pre_input_audio,       # silent audio input (only if no snd_aloop)
         "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-tune", "zerolatency",
-        "-b:v", "2500k",
-        "-maxrate", "2500k",
-        "-bufsize", "5000k",
+        "-preset", "ultrafast", # fastest encode, lowest CPU latency
+        "-tune", "zerolatency", # disable lookahead buffers
+        "-b:v", "1500k",        # lower bitrate = less data to transmit per segment
+        "-maxrate", "1500k",
+        "-bufsize", "1500k",    # 1x bitrate = tightest rate control
         "-vf", "scale=1280:720",
-        "-g", "30",
+        "-r", "30",             # force 30fps input
+        "-g", "30",             # keyframe every 30 frames = every 1 second
         "-keyint_min", "30",
-        "-sc_threshold", "0",
-        *audio_args,
+        "-sc_threshold", "0",   # no scene-change keyframes (breaks segments)
+        *post_input_audio,      # audio encoding
+        *map_args,              # explicit stream mapping (only when silent audio)
         "-f", "hls",
-        "-hls_time", "2",
-        "-hls_list_size", "10",
-        "-hls_flags", "delete_segments+append_list",
+        "-hls_time", "1",           # 1-second segments
+        "-hls_list_size", "3",      # keep only 3 segments = ~3s latency minimum
+        "-hls_flags", "delete_segments+append_list+omit_endlist",
+        "-hls_segment_type", "mpegts",
         "-hls_segment_filename", segment,
         playlist,
     ]
