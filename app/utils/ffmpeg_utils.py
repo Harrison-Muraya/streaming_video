@@ -123,11 +123,21 @@ class FFmpegProcessor:
                 output_path,
                 vf=f'scale={width}:{height}',
                 vcodec='libx264',
-                preset='slow',
+                preset='fast',          # change from 'slow' — slow doesn't benefit much from more cores
                 video_bitrate=bitrate,
                 acodec='aac',
                 audio_bitrate='128k',
-                movflags='faststart'
+                movflags='faststart',
+                **{'threads': 0} 
+                # stream,
+                # output_path,
+                # vf=f'scale={width}:{height}',
+                # vcodec='libx264',
+                # preset='slow',
+                # video_bitrate=bitrate,
+                # acodec='aac',
+                # audio_bitrate='128k',
+                # movflags='faststart'
             )
             
             ffmpeg.run(stream, overwrite_output=True, capture_stdout=True, capture_stderr=True)

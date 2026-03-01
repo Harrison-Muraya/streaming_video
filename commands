@@ -55,3 +55,9 @@ chmod +x /var/www/streaming_video/deploy.sh
 """
 
 
+# Also clean any leftover temp conversion folders
+rm -rf /var/www/streaming_video/temp/*
+rm -rf /var/www/streaming_video/uploads/episodes/*
+
+# Check how much you recovered
+df -h /
