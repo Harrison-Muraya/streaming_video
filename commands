@@ -1,8 +1,6 @@
 .\venv\Scripts\activate
 uvicorn app.main:app --reload
 
-
-
 """
 # Start Redis (if not running as service)
 redis-server
@@ -16,10 +14,6 @@ netstat -ano | findstr :6379
 # Start Celery worker
 celery -A celery_worker worker --loglevel=info --pool=solo
 
-
-
-
-
 #to clear python catch
 Remove-Item -Recurse -Force app\__pycache__, app\models\__pycache__, app\services\__pycache__, app\api\__pycache__
 
@@ -32,6 +26,7 @@ sudo apt update
 sudo chown -R harr:harr /var/www/streaming_video
 cd /var/www/streaming_video
 git pull origin main
+git pull origin main --no-rebase
 source .venv/bin/activate
 pip install -r requirements.txt
 
@@ -58,3 +53,5 @@ sudo systemctl status nginx
 chmod +x /var/www/streaming_video/deploy.sh
 ./deploy.sh
 """
+
+
