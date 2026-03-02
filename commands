@@ -30,6 +30,25 @@ git pull origin main --no-rebase
 source .venv/bin/activate
 pip install -r requirements.txt
 
+@Rem change the permissions to server files
+sudo chown -R www-data:www-data /var/www/streaming_video/uploads
+sudo chown -R www-data:www-data /var/www/streaming_video/temp
+sudo chown -R www-data:www-data /var/www/streaming_video/media
+
+# Verify
+ls -la /var/www/streaming_video/ | grep -E "uploads|temp|media"
+
+@REM  also make sure your app user harr can still write there (for manual operations):
+sudo chmod -R 775 /var/www/streaming_video/uploads
+sudo chmod -R 775 /var/www/streaming_video/temp
+sudo chmod -R 775 /var/www/streaming_video/media
+
+# Add harr to www-data group so both users can write
+sudo usermod -aG www-data harr
+
+# Apply group change without logging out
+newgrp www-data
+
 @REM Restart FastAPI application
 sudo systemctl restart streaming_video
 
@@ -61,3 +80,6 @@ rm -rf /var/www/streaming_video/uploads/episodes/*
 
 # Check how much you recovered
 df -h /
+
+# Check how Celery is currently running:
+ps aux | grep celery
