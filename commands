@@ -83,3 +83,26 @@ df -h /
 
 # Check how Celery is currently running:
 ps aux | grep celery
+
+
+@REM commands for expanding storage on ubuntu server:
+# Step 1 — Expand the physical partition (sda3) to use all 532GB
+sudo growpart /dev/sda 3
+
+# Step 2 — Expand the physical volume to fill the new partition size
+sudo pvresize /dev/sda3
+
+# Step 3 — Expand the logical volume to use all free space
+sudo lvextend -l +100%FREE /dev/mapper/ubuntu--vg-ubuntu--lv
+
+# Step 4 — Expand the filesystem to fill the logical volume
+sudo resize2fs /dev/mapper/ubuntu--vg-ubuntu--lv
+
+# Step 5 — Verify — should now show ~500GB available
+df -h /
+```
+
+Run all 5 commands one by one. After step 5 you should see something like:
+```
+Filesystem                         Size  Used Avail Use% Mounted on
+/dev/mapper/ubuntu--vg-ubuntu--lv  524G   11G  513G   3% /
