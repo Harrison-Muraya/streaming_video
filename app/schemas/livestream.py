@@ -15,6 +15,7 @@ class LiveStreamCreate(BaseModel):
     # Linux:    "/dev/video0"
     # RTSP cam: "rtsp://192.168.1.10/live"
     device_path: str = Field(..., description="Capture card device path or RTSP URL")
+    audio_device: Optional[str] = Field(None, description="ALSA hw address e.g. hw:1,0") 
     is_active: bool = True
 
 
@@ -23,6 +24,7 @@ class LiveStreamUpdate(BaseModel):
     description: Optional[str] = None
     thumbnail_url: Optional[str] = None
     device_path: Optional[str] = None
+    audio_device: Optional[str] = None
     is_active: Optional[bool] = None
 
 
