@@ -392,6 +392,7 @@ class LiveStreamService:
             "message":      "Stream started",
             "stream_id":    stream_id,
             "stream_url":   public_url,
+            "hls_playlist": playlist_path,  
             "audio_device": audio_device or "none (silent fallback)",
         }
 

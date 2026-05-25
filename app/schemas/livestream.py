@@ -71,7 +71,8 @@ class StartStreamResponse(BaseModel):
     message: str
     stream_id: int
     stream_url: str
-    hls_playlist: str
+    hls_playlist: str       
+    audio_device: str 
 
 
 class StopStreamResponse(BaseModel):
