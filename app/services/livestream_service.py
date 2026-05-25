@@ -1,25 +1,17 @@
 """
-LiveStreamService
-─────────────────
-Manages one FFmpeg process per capture card.
-FFmpeg reads from the capture card and writes HLS segments to disk.
-FastAPI then serves those .m3u8 / .ts files as static media.
+Live streaming service — supports HDMI capture cards with embedded audio.
 
 Architecture:
-  Capture Card ──► FFmpeg (transcode) ──► HLS segments on disk
-                                              │
-                                    FastAPI /media/live/{id}/
-                                              │
-                                         Browser (HLS.js)
-
-Requirements (install once):
-  pip install ffmpeg-python   (already in your project)
-
-System requirements:
-  • FFmpeg must be installed and in PATH
-  • On Windows with a capture card, use DirectShow input
-  • On Linux with a capture card, use v4l2 input
+  HDMI Capture Card (video + audio)
+       │
+       ▼
+  FFmpeg  ──transcode──►  HLS segments on disk  (.m3u8 + .ts)
+                                  │
+                         FastAPI /media/live/{id}/
+                                  │
+                            Browser (HLS.js)
 """
+
 import os
 import signal
 import subprocess
@@ -33,9 +25,13 @@ from app.models.livestream import LiveStream
 from app.schemas.livestream import LiveStreamCreate, LiveStreamUpdate
 from app.config import settings
 
-# Where HLS output files are written (served as /media/live/<stream_id>/)
+# Where HLS output files are written — served as /media/live/<stream_id>/
 LIVE_MEDIA_ROOT = os.path.join(settings.MEDIA_ROOT, "live")
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Internal helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _get_hls_dir(stream_id: int) -> str:
     path = os.path.join(LIVE_MEDIA_ROOT, str(stream_id))
@@ -43,76 +39,183 @@ def _get_hls_dir(stream_id: int) -> str:
     return path
 
 
-def _build_ffmpeg_command(device_path: str, hls_dir: str) -> list:
+def _detect_audio_device(video_device: str, audio_device: Optional[str]) -> Optional[str]:
+    """
+    Return the audio device string to use, or None if none is available.
+
+    For HDMI capture cards:
+      - Windows: the card exposes a combined dshow audio device,
+                 e.g. "audio=USB Capture HDMI+".
+      - Linux:   the card registers an ALSA device you can find with
+                 `arecord -l`, e.g. "hw:2,0".
+
+    If `audio_device` is explicitly provided it is always trusted.
+    Otherwise we try a best-effort auto-detect on Linux.
+    """
+    if audio_device:
+        return audio_device
+
+    if platform.system() == "Windows":
+        # Cannot reliably auto-detect on Windows without dshow enumeration;
+        # the user must supply audio_device in the LiveStream record.
+        return None
+
+    # Linux auto-detect: look for the same soundcard index as the video device.
+    # /dev/video2 → try card 2 first, then fall back to card 1.
+    try:
+        result = subprocess.run(
+            ["arecord", "-l"], capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0 and result.stdout:
+            # Pull card numbers from "card N:" lines
+            import re
+            cards = re.findall(r"card (\d+):", result.stdout)
+            if cards:
+                # Prefer the card that is NOT card 0 (card 0 is usually the
+                # system mic; capture cards are typically card 1+).
+                capture_cards = [c for c in cards if c != "0"]
+                if capture_cards:
+                    return f"hw:{capture_cards[0]},0"
+    except Exception:
+        pass
+
+    return None
+
+
+def _validate_video_device(device_path: str) -> None:
+    """
+    Raise HTTPException(400) if a local video device does not exist.
+    Skips validation for RTSP/HTTP sources (checked at FFmpeg launch time).
+    """
+    if device_path.startswith("rtsp://") or device_path.startswith("http"):
+        return  # network source — validate at runtime
+    if platform.system() == "Windows":
+        return  # dshow devices cannot be stat()-checked
+    if not os.path.exists(device_path):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Video device not found: {device_path}. "
+                   f"Run `ls /dev/video*` to list available devices."
+        )
+
+
+def _build_ffmpeg_command(
+    video_device: str,
+    audio_device: Optional[str],
+    hls_dir: str,
+) -> list:
     """
     Build the FFmpeg command for the current OS and input type.
 
-    Supports:
-      - Windows DirectShow capture cards  (device_path starts with "video=")
-      - Linux V4L2 capture cards          (device_path starts with "/dev/")
-      - RTSP IP cameras                   (device_path starts with "rtsp://")
-      - Any other FFmpeg-compatible URL   (passed through as-is)
+    Supported video sources
+    ───────────────────────
+    • Windows DirectShow HDMI card  — video_device = "video=USB Capture HDMI+"
+    • Linux V4L2 HDMI card          — video_device = "/dev/video1"
+    • RTSP IP camera                — video_device = "rtsp://..."
+    • Any other FFmpeg-compatible   — passed through as-is
+
+    Supported audio sources
+    ───────────────────────
+    • Windows DirectShow            — audio_device = "audio=USB Capture HDMI+"
+    • Linux ALSA                    — audio_device = "hw:2,0"
+    • None                          — silent AAC stream (anullsrc fallback)
     """
     playlist = os.path.join(hls_dir, "playlist.m3u8")
     segment  = os.path.join(hls_dir, "segment_%03d.ts")
 
-    # ── Determine input format ────────────────────────────────────────────────
-    is_windows = platform.system() == "Windows"
+    ffmpeg_bin = (
+        settings.FFMPEG_PATH
+        if os.path.isfile(settings.FFMPEG_PATH)
+        else "ffmpeg"
+    )
+    is_windows  = platform.system() == "Windows"
+    is_network  = video_device.startswith("rtsp://") or video_device.startswith("http")
 
-    # ── Resolve FFmpeg binary ─────────────────────────────────────────────────
-    ffmpeg_bin = settings.FFMPEG_PATH if os.path.isfile(settings.FFMPEG_PATH) else "ffmpeg"
-
-    # ── Input arguments ───────────────────────────────────────────────────────
-    if device_path.startswith("rtsp://") or device_path.startswith("http"):
-        input_args = ["-i", device_path]
-    elif is_windows:
-        input_args = ["-f", "dshow", "-i", device_path]
-    else:
-        # Linux V4L2 — DroidCam, capture cards (/dev/video0, /dev/video1 ...)
-        input_args = ["-f", "v4l2", "-i", device_path]
-
-    # ── Audio source args (must come BEFORE encoding args) ───────────────────
-    if _check_audio_available():
-        # snd_aloop loaded — real audio from DroidCam
-        pre_input_audio  = []
-        post_input_audio = ["-c:a", "aac", "-b:a", "128k", "-ar", "44100"]
+    # ── Video input ───────────────────────────────────────────────────────────
+    if is_network:
+        # RTSP / HTTP — FFmpeg handles audio itself from the stream
+        video_input_args = ["-i", video_device]
+        audio_input_args = []
         map_args         = []
+
+    elif is_windows:
+        # Windows DirectShow — combine video + audio in ONE -i when both are
+        # from the same capture card; otherwise use separate inputs.
+        if audio_device and audio_device.startswith("audio="):
+            # Single DirectShow source with embedded audio
+            video_input_args = [
+                "-f", "dshow",
+                "-i", f"{video_device}:{audio_device}",
+            ]
+            audio_input_args = []
+            map_args         = []
+        elif audio_device:
+            # Separate audio device
+            video_input_args = ["-f", "dshow", "-i", video_device]
+            audio_input_args = ["-f", "dshow", "-i", audio_device]
+            map_args         = ["-map", "0:v", "-map", "1:a"]
+        else:
+            # No audio — generate silent stream
+            video_input_args = ["-f", "dshow", "-i", video_device]
+            audio_input_args = ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
+            map_args         = ["-map", "0:v", "-map", "1:a"]
+
     else:
-        # No audio device — generate silent audio as second input
-        pre_input_audio  = ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
-        post_input_audio = ["-c:a", "aac", "-b:a", "64k", "-ar", "44100"]
-        map_args         = ["-map", "0:v", "-map", "1:a"]
+        # Linux V4L2 video
+        video_input_args = ["-f", "v4l2", "-i", video_device]
+
+        if audio_device:
+            # ALSA audio from the HDMI capture card (e.g. hw:2,0)
+            audio_input_args = ["-f", "alsa", "-i", audio_device]
+            map_args         = ["-map", "0:v", "-map", "1:a"]
+        else:
+            # No audio device found — generate silent stream
+            audio_input_args = ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
+            map_args         = ["-map", "0:v", "-map", "1:a"]
 
     # ── Full FFmpeg command ───────────────────────────────────────────────────
+    #
     # Key low-latency settings:
-    #   NO -re flag          → don't throttle input, process as fast as possible
-    #   ultrafast preset     → lowest CPU encode latency
-    #   bufsize = 1x bitrate → small buffer = less delay before output
-    #   hls_time 1           → 1-second segments (was 2) = less wait per segment
-    #   hls_list_size 3      → only 3 segments in playlist = ~3s total buffer
-    #   omit_endlist         → tell players this is a live stream, don't wait for end
+    #   ultrafast preset   → lowest encode latency
+    #   zerolatency tune   → disables lookahead buffers
+    #   bufsize = 1× rate  → tight rate control, small output buffer
+    #   hls_time 1         → 1-second segments
+    #   hls_list_size 3    → ~3 s total live buffer
+    #   omit_endlist       → signal live stream to player (no "stream ended" stall)
+    #   delete_segments    → auto-delete old .ts files so disk does not fill up
+    #
     cmd = [
         ffmpeg_bin,
-        *input_args,            # video input (no -re = no artificial throttle)
-        *pre_input_audio,       # silent audio input (only if no snd_aloop)
-        "-c:v", "libx264",
-        "-preset", "ultrafast", # fastest encode, lowest CPU latency
-        "-tune", "zerolatency", # disable lookahead buffers
-        "-b:v", "1500k",        # lower bitrate = less data to transmit per segment
-        "-maxrate", "1500k",
-        "-bufsize", "1500k",    # 1x bitrate = tightest rate control
-        "-vf", "scale=1280:720",
-        "-r", "30",             # force 30fps input
-        "-g", "30",             # keyframe every 30 frames = every 1 second
-        "-keyint_min", "30",
-        "-sc_threshold", "0",   # no scene-change keyframes (breaks segments)
-        *post_input_audio,      # audio encoding
-        *map_args,              # explicit stream mapping (only when silent audio)
-        "-f", "hls",
-        "-hls_time", "1",           # 1-second segments
-        "-hls_list_size", "3",      # keep only 3 segments = ~3s latency minimum
-        "-hls_flags", "delete_segments+append_list+omit_endlist",
-        "-hls_segment_type", "mpegts",
+        *video_input_args,
+        *audio_input_args,
+
+        # Video encoding
+        "-c:v",         "libx264",
+        "-preset",      "ultrafast",
+        "-tune",        "zerolatency",
+        "-b:v",         "1500k",
+        "-maxrate",     "1500k",
+        "-bufsize",     "1500k",
+        "-vf",          "scale=1280:720",
+        "-r",           "30",
+        "-g",           "30",        # keyframe every 1 s at 30 fps
+        "-keyint_min",  "30",
+        "-sc_threshold","0",         # no scene-change keyframes (keeps segments clean)
+
+        # Audio encoding
+        "-c:a",  "aac",
+        "-b:a",  "128k",
+        "-ar",   "44100",
+
+        # Stream mapping (only present when using separate inputs)
+        *map_args,
+
+        # HLS muxer
+        "-f",                    "hls",
+        "-hls_time",             "1",
+        "-hls_list_size",        "3",
+        "-hls_flags",            "delete_segments+append_list+omit_endlist",
+        "-hls_segment_type",     "mpegts",
         "-hls_segment_filename", segment,
         playlist,
     ]
@@ -120,14 +223,36 @@ def _build_ffmpeg_command(device_path: str, hls_dir: str) -> list:
     return cmd
 
 
-def _check_audio_available() -> bool:
-    """Return True if snd_aloop is loaded (or we are on Windows)."""
-    try:
-        result = subprocess.run(["lsmod"], capture_output=True, text=True, timeout=3)
-        return "snd_aloop" in result.stdout
-    except Exception:
-        return True  # Windows / unknown — assume audio is fine
+def _cleanup_hls_dir(hls_dir: str) -> None:
+    """Remove all .ts segments and the playlist from an HLS output directory."""
+    if not os.path.isdir(hls_dir):
+        return
+    for filename in os.listdir(hls_dir):
+        if filename.endswith(".ts") or filename.endswith(".m3u8"):
+            try:
+                os.remove(os.path.join(hls_dir, filename))
+            except OSError:
+                pass
 
+
+def _kill_process(pid: int) -> None:
+    """Best-effort process termination, cross-platform."""
+    try:
+        if platform.system() == "Windows":
+            subprocess.call(
+                ["taskkill", "/F", "/PID", str(pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            os.kill(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        pass  # already dead
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Service class
+# ─────────────────────────────────────────────────────────────────────────────
 
 class LiveStreamService:
 
@@ -139,15 +264,17 @@ class LiveStreamService:
         db.add(stream)
         db.commit()
         db.refresh(stream)
-        # Pre-create the HLS directory
-        _get_hls_dir(stream.id)
+        _get_hls_dir(stream.id)   # pre-create HLS output folder
         return stream
 
     @staticmethod
     def get_stream(stream_id: int, db: Session) -> LiveStream:
         stream = db.query(LiveStream).filter(LiveStream.id == stream_id).first()
         if not stream:
-            raise HTTPException(status_code=404, detail=f"Stream {stream_id} not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Stream {stream_id} not found",
+            )
         return stream
 
     @staticmethod
@@ -159,14 +286,16 @@ class LiveStreamService:
 
     @staticmethod
     def get_live_streams(db: Session) -> List[LiveStream]:
-        """Return only currently live & active streams (for the user-facing list)"""
+        """Return only currently live & active streams (user-facing list)."""
         return db.query(LiveStream).filter(
-            LiveStream.is_live == True,
+            LiveStream.is_live   == True,
             LiveStream.is_active == True,
         ).all()
 
     @staticmethod
-    def update_stream(stream_id: int, data: LiveStreamUpdate, db: Session) -> LiveStream:
+    def update_stream(
+        stream_id: int, data: LiveStreamUpdate, db: Session
+    ) -> LiveStream:
         stream = LiveStreamService.get_stream(stream_id, db)
         for k, v in data.dict(exclude_unset=True).items():
             setattr(stream, k, v)
@@ -175,7 +304,7 @@ class LiveStreamService:
         return stream
 
     @staticmethod
-    def delete_stream(stream_id: int, db: Session):
+    def delete_stream(stream_id: int, db: Session) -> dict:
         stream = LiveStreamService.get_stream(stream_id, db)
         if stream.is_live:
             LiveStreamService.stop_stream(stream_id, db)
@@ -183,89 +312,116 @@ class LiveStreamService:
         db.commit()
         return {"message": f"Stream {stream_id} deleted"}
 
-    # ── Start / Stop ─────────────────────────────────────────────────────────
+    # ── Start ─────────────────────────────────────────────────────────────────
 
     @staticmethod
     def start_stream(stream_id: int, db: Session) -> dict:
         """
-        Launch an FFmpeg process for this stream's capture card.
-        The process writes HLS segments to disk continuously.
+        Launch an FFmpeg process for this stream's HDMI capture card.
+
+        Steps:
+          1. Validate the stream is not already live.
+          2. Validate the video device exists on disk (Linux/local only).
+          3. Resolve the audio device (use stored value or auto-detect).
+          4. Build and launch the FFmpeg command.
+          5. Persist PID, HLS playlist path, and public URL to the DB.
         """
         stream = LiveStreamService.get_stream(stream_id, db)
 
         if stream.is_live:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Stream is already live"
+                detail="Stream is already live",
             )
 
-        hls_dir = _get_hls_dir(stream_id)
+        # 1. Validate video device
+        _validate_video_device(stream.device_path)
+
+        # 2. Resolve audio device
+        #    stream.audio_device is set by the user when creating/updating the
+        #    stream record.  _detect_audio_device tries auto-detect if it is
+        #    None, so new setups that don't know their ALSA hw address yet can
+        #    still get audio automatically on Linux.
+        audio_device = _detect_audio_device(stream.device_path, stream.audio_device)
+
+        # 3. Prepare HLS output directory
+        hls_dir       = _get_hls_dir(stream_id)
         playlist_path = os.path.join(hls_dir, "playlist.m3u8")
 
         # Build public URL (served via FastAPI's /media static mount)
-        relative = os.path.relpath(playlist_path, settings.MEDIA_ROOT).replace("\\", "/")
+        relative   = os.path.relpath(playlist_path, settings.MEDIA_ROOT).replace("\\", "/")
         public_url = f"{settings.MEDIA_URL.rstrip('/')}/{relative}"
 
-        # Build and launch FFmpeg
-        cmd = _build_ffmpeg_command(stream.device_path, hls_dir)
+        # 4. Build FFmpeg command
+        cmd = _build_ffmpeg_command(stream.device_path, audio_device, hls_dir)
 
+        # 5. Launch FFmpeg
         try:
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,   # Capture stderr for debugging
-                creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0,
+                stderr=subprocess.PIPE,   # keep stderr so errors can be read later
+                creationflags=(
+                    subprocess.CREATE_NO_WINDOW
+                    if platform.system() == "Windows"
+                    else 0
+                ),
             )
         except FileNotFoundError:
             raise HTTPException(
-                status_code=500,
-                detail="FFmpeg not found. Make sure FFmpeg is installed and in your PATH."
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="FFmpeg not found. Install FFmpeg and make sure it is in your PATH.",
             )
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to start FFmpeg: {e}")
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to start FFmpeg: {exc}",
+            )
 
-        # Persist state
-        stream.is_live = True
-        stream.ffmpeg_pid = proc.pid
-        stream.hls_playlist_path = playlist_path
-        stream.stream_url = public_url
-        stream.started_at = datetime.utcnow()
-        stream.stopped_at = None
+        # 6. Persist state
+        stream.is_live            = True
+        stream.ffmpeg_pid         = proc.pid
+        stream.hls_playlist_path  = playlist_path
+        stream.stream_url         = public_url
+        stream.audio_device       = audio_device   # save resolved value
+        stream.started_at         = datetime.utcnow()
+        stream.stopped_at         = None
         db.commit()
 
         return {
-            "message": "Stream started",
-            "stream_id": stream_id,
-            "stream_url": public_url,
-            "hls_playlist": playlist_path,
+            "message":      "Stream started",
+            "stream_id":    stream_id,
+            "stream_url":   public_url,
+            "audio_device": audio_device or "none (silent fallback)",
         }
+
+    # ── Stop ─────────────────────────────────────────────────────────────────
 
     @staticmethod
     def stop_stream(stream_id: int, db: Session) -> dict:
-        """Kill the FFmpeg process and mark the stream as offline."""
+        """
+        Kill the FFmpeg process, clean up HLS segments, and mark the stream offline.
+        """
         stream = LiveStreamService.get_stream(stream_id, db)
 
         if not stream.is_live:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Stream is not currently live"
+                detail="Stream is not currently live",
             )
 
+        # Kill FFmpeg process
         if stream.ffmpeg_pid:
-            try:
-                if platform.system() == "Windows":
-                    subprocess.call(
-                        ["taskkill", "/F", "/PID", str(stream.ffmpeg_pid)],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                    )
-                else:
-                    os.kill(stream.ffmpeg_pid, signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
-                pass  # Process already dead — that's fine
+            _kill_process(stream.ffmpeg_pid)
 
-        stream.is_live = False
-        stream.ffmpeg_pid = None
-        stream.stopped_at = datetime.utcnow()
+        # Clean up stale HLS segments from disk so they don't accumulate
+        hls_dir = _get_hls_dir(stream_id)
+        _cleanup_hls_dir(hls_dir)
+
+        # Update DB
+        stream.is_live      = False
+        stream.ffmpeg_pid   = None
+        stream.stopped_at   = datetime.utcnow()
         stream.viewer_count = 0
         db.commit()
 
@@ -274,281 +430,18 @@ class LiveStreamService:
     # ── Viewer count ─────────────────────────────────────────────────────────
 
     @staticmethod
-    def join_stream(stream_id: int, db: Session):
+    def join_stream(stream_id: int, db: Session) -> None:
         stream = LiveStreamService.get_stream(stream_id, db)
         if not stream.is_live:
-            raise HTTPException(status_code=400, detail="Stream is not live")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Stream is not live",
+            )
         stream.viewer_count = max(0, stream.viewer_count + 1)
         db.commit()
 
     @staticmethod
-    def leave_stream(stream_id: int, db: Session):
+    def leave_stream(stream_id: int, db: Session) -> None:
         stream = LiveStreamService.get_stream(stream_id, db)
         stream.viewer_count = max(0, stream.viewer_count - 1)
         db.commit()
-
-# """
-# LiveStreamService
-# ─────────────────
-# Manages one FFmpeg process per capture card.
-# FFmpeg reads from the capture card and writes HLS segments to disk.
-# FastAPI then serves those .m3u8 / .ts files as static media.
-
-# Architecture:
-#   Capture Card ──► FFmpeg (transcode) ──► HLS segments on disk
-#                                               │
-#                                     FastAPI /media/live/{id}/
-#                                               │
-#                                          Browser (HLS.js)
-
-# Requirements (install once):
-#   pip install ffmpeg-python   (already in your project)
-
-# System requirements:
-#   • FFmpeg must be installed and in PATH
-#   • On Windows with a capture card, use DirectShow input
-#   • On Linux with a capture card, use v4l2 input
-# """
-# import os
-# import signal
-# import subprocess
-# import platform
-# from datetime import datetime
-# from typing import List, Optional
-# from sqlalchemy.orm import Session
-# from fastapi import HTTPException, status
-
-# from app.models.livestream import LiveStream
-# from app.schemas.livestream import LiveStreamCreate, LiveStreamUpdate
-# from app.config import settings
-
-# # Where HLS output files are written (served as /media/live/<stream_id>/)
-# LIVE_MEDIA_ROOT = os.path.join(settings.MEDIA_ROOT, "live")
-
-
-# def _get_hls_dir(stream_id: int) -> str:
-#     path = os.path.join(LIVE_MEDIA_ROOT, str(stream_id))
-#     os.makedirs(path, exist_ok=True)
-#     return path
-
-
-# def _build_ffmpeg_command(device_path: str, hls_dir: str) -> list:
-#     """
-#     Build the FFmpeg command for the current OS and input type.
-
-#     Supports:
-#       - Windows DirectShow capture cards  (device_path starts with "video=")
-#       - Linux V4L2 capture cards          (device_path starts with "/dev/")
-#       - RTSP IP cameras                   (device_path starts with "rtsp://")
-#       - Any other FFmpeg-compatible URL   (passed through as-is)
-#     """
-#     playlist = os.path.join(hls_dir, "playlist.m3u8")
-#     segment  = os.path.join(hls_dir, "segment_%03d.ts")
-
-#     # ── Determine input format ────────────────────────────────────────────────
-#     is_windows = platform.system() == "Windows"
-
-#     if device_path.startswith("rtsp://") or device_path.startswith("http"):
-#         # IP camera / network stream — no special input format needed
-#         input_args = ["-i", device_path]
-
-#     elif is_windows:
-#         # Windows DirectShow — e.g. "video=AVerMedia Live Gamer"
-#         input_args = ["-f", "dshow", "-i", device_path]
-
-#     else:
-#         # Linux V4L2 — e.g. "/dev/video0"
-#         input_args = ["-f", "v4l2", "-i", device_path]
-
-#     # ── Full FFmpeg command ───────────────────────────────────────────────────
-#     cmd = [
-#         "ffmpeg",
-#         "-re",                          # Read at native frame rate
-#         *input_args,
-
-#         # Video encoding
-#         "-c:v", "libx264",
-#         "-preset", "veryfast",          # Low latency
-#         "-tune", "zerolatency",
-#         "-b:v", "2500k",
-#         "-maxrate", "2500k",
-#         "-bufsize", "5000k",
-#         "-vf", "scale=1280:720",        # Force 720p output
-#         "-g", "30",                     # Keyframe every 30 frames (matches HLS segment)
-#         "-keyint_min", "30",
-#         "-sc_threshold", "0",
-
-#         # Audio encoding
-#         "-c:a", "aac",
-#         "-b:a", "128k",
-#         "-ar", "44100",
-
-#         # HLS output
-#         "-f", "hls",
-#         "-hls_time", "2",               # 2-second segments (low latency)
-#         "-hls_list_size", "10",         # Keep last 10 segments in playlist
-#         "-hls_flags", "delete_segments+append_list",
-#         "-hls_segment_filename", segment,
-#         playlist,
-#     ]
-
-#     return cmd
-
-
-# class LiveStreamService:
-
-#     # ── CRUD ─────────────────────────────────────────────────────────────────
-
-#     @staticmethod
-#     def create_stream(data: LiveStreamCreate, db: Session) -> LiveStream:
-#         stream = LiveStream(**data.dict())
-#         db.add(stream)
-#         db.commit()
-#         db.refresh(stream)
-#         # Pre-create the HLS directory
-#         _get_hls_dir(stream.id)
-#         return stream
-
-#     @staticmethod
-#     def get_stream(stream_id: int, db: Session) -> LiveStream:
-#         stream = db.query(LiveStream).filter(LiveStream.id == stream_id).first()
-#         if not stream:
-#             raise HTTPException(status_code=404, detail=f"Stream {stream_id} not found")
-#         return stream
-
-#     @staticmethod
-#     def get_all_streams(db: Session, active_only: bool = False) -> List[LiveStream]:
-#         query = db.query(LiveStream)
-#         if active_only:
-#             query = query.filter(LiveStream.is_active == True)
-#         return query.all()
-
-#     @staticmethod
-#     def get_live_streams(db: Session) -> List[LiveStream]:
-#         """Return only currently live & active streams (for the user-facing list)"""
-#         return db.query(LiveStream).filter(
-#             LiveStream.is_live == True,
-#             LiveStream.is_active == True,
-#         ).all()
-
-#     @staticmethod
-#     def update_stream(stream_id: int, data: LiveStreamUpdate, db: Session) -> LiveStream:
-#         stream = LiveStreamService.get_stream(stream_id, db)
-#         for k, v in data.dict(exclude_unset=True).items():
-#             setattr(stream, k, v)
-#         db.commit()
-#         db.refresh(stream)
-#         return stream
-
-#     @staticmethod
-#     def delete_stream(stream_id: int, db: Session):
-#         stream = LiveStreamService.get_stream(stream_id, db)
-#         if stream.is_live:
-#             LiveStreamService.stop_stream(stream_id, db)
-#         db.delete(stream)
-#         db.commit()
-#         return {"message": f"Stream {stream_id} deleted"}
-
-#     # ── Start / Stop ─────────────────────────────────────────────────────────
-
-#     @staticmethod
-#     def start_stream(stream_id: int, db: Session) -> dict:
-#         """
-#         Launch an FFmpeg process for this stream's capture card.
-#         The process writes HLS segments to disk continuously.
-#         """
-#         stream = LiveStreamService.get_stream(stream_id, db)
-
-#         if stream.is_live:
-#             raise HTTPException(
-#                 status_code=status.HTTP_400_BAD_REQUEST,
-#                 detail="Stream is already live"
-#             )
-
-#         hls_dir = _get_hls_dir(stream_id)
-#         playlist_path = os.path.join(hls_dir, "playlist.m3u8")
-
-#         # Build public URL (served via FastAPI's /media static mount)
-#         relative = os.path.relpath(playlist_path, settings.MEDIA_ROOT).replace("\\", "/")
-#         public_url = f"{settings.MEDIA_URL.rstrip('/')}/{relative}"
-
-#         # Build and launch FFmpeg
-#         cmd = _build_ffmpeg_command(stream.device_path, hls_dir)
-
-#         try:
-#             proc = subprocess.Popen(
-#                 cmd,
-#                 stdout=subprocess.DEVNULL,
-#                 stderr=subprocess.PIPE,   # Capture stderr for debugging
-#                 creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0,
-#             )
-#         except FileNotFoundError:
-#             raise HTTPException(
-#                 status_code=500,
-#                 detail="FFmpeg not found. Make sure FFmpeg is installed and in your PATH."
-#             )
-#         except Exception as e:
-#             raise HTTPException(status_code=500, detail=f"Failed to start FFmpeg: {e}")
-
-#         # Persist state
-#         stream.is_live = True
-#         stream.ffmpeg_pid = proc.pid
-#         stream.hls_playlist_path = playlist_path
-#         stream.stream_url = public_url
-#         stream.started_at = datetime.utcnow()
-#         stream.stopped_at = None
-#         db.commit()
-
-#         return {
-#             "message": "Stream started",
-#             "stream_id": stream_id,
-#             "stream_url": public_url,
-#             "hls_playlist": playlist_path,
-#         }
-
-#     @staticmethod
-#     def stop_stream(stream_id: int, db: Session) -> dict:
-#         """Kill the FFmpeg process and mark the stream as offline."""
-#         stream = LiveStreamService.get_stream(stream_id, db)
-
-#         if not stream.is_live:
-#             raise HTTPException(
-#                 status_code=status.HTTP_400_BAD_REQUEST,
-#                 detail="Stream is not currently live"
-#             )
-
-#         if stream.ffmpeg_pid:
-#             try:
-#                 if platform.system() == "Windows":
-#                     subprocess.call(
-#                         ["taskkill", "/F", "/PID", str(stream.ffmpeg_pid)],
-#                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-#                     )
-#                 else:
-#                     os.kill(stream.ffmpeg_pid, signal.SIGTERM)
-#             except (ProcessLookupError, PermissionError):
-#                 pass  # Process already dead — that's fine
-
-#         stream.is_live = False
-#         stream.ffmpeg_pid = None
-#         stream.stopped_at = datetime.utcnow()
-#         stream.viewer_count = 0
-#         db.commit()
-
-#         return {"message": "Stream stopped", "stream_id": stream_id}
-
-#     # ── Viewer count ─────────────────────────────────────────────────────────
-
-#     @staticmethod
-#     def join_stream(stream_id: int, db: Session):
-#         stream = LiveStreamService.get_stream(stream_id, db)
-#         if not stream.is_live:
-#             raise HTTPException(status_code=400, detail="Stream is not live")
-#         stream.viewer_count = max(0, stream.viewer_count + 1)
-#         db.commit()
-
-#     @staticmethod
-#     def leave_stream(stream_id: int, db: Session):
-#         stream = LiveStreamService.get_stream(stream_id, db)
-#         stream.viewer_count = max(0, stream.viewer_count - 1)
-#         db.commit()

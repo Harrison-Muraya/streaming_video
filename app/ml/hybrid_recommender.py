@@ -115,7 +115,8 @@ class HybridRecommender:
     
     def _format_recommendations(
         self,
-        recommendations: List[tuple]
+        recommendations: List[tuple],
+         user_id: int
     ) -> List[Dict]:
         """
         Format recommendations with full movie data

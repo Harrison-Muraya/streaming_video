@@ -30,6 +30,25 @@ git pull origin main --no-rebase
 source .venv/bin/activate
 pip install -r requirements.txt
 
+@Rem change the permissions to server files
+sudo chown -R www-data:www-data /var/www/streaming_video/uploads
+sudo chown -R www-data:www-data /var/www/streaming_video/temp
+sudo chown -R www-data:www-data /var/www/streaming_video/media
+
+# Verify
+ls -la /var/www/streaming_video/ | grep -E "uploads|temp|media"
+
+@REM  also make sure your app user harr can still write there (for manual operations):
+sudo chmod -R 775 /var/www/streaming_video/uploads
+sudo chmod -R 775 /var/www/streaming_video/temp
+sudo chmod -R 775 /var/www/streaming_video/media
+
+# Add harr to www-data group so both users can write
+sudo usermod -aG www-data harr
+
+# Apply group change without logging out
+newgrp www-data
+
 @REM Restart FastAPI application
 sudo systemctl restart streaming_video
 
@@ -61,3 +80,29 @@ rm -rf /var/www/streaming_video/uploads/episodes/*
 
 # Check how much you recovered
 df -h /
+
+# Check how Celery is currently running:
+ps aux | grep celery
+
+
+@REM commands for expanding storage on ubuntu server:
+# Step 1 — Expand the physical partition (sda3) to use all 532GB
+sudo growpart /dev/sda 3
+
+# Step 2 — Expand the physical volume to fill the new partition size
+sudo pvresize /dev/sda3
+
+# Step 3 — Expand the logical volume to use all free space
+sudo lvextend -l +100%FREE /dev/mapper/ubuntu--vg-ubuntu--lv
+
+# Step 4 — Expand the filesystem to fill the logical volume
+sudo resize2fs /dev/mapper/ubuntu--vg-ubuntu--lv
+
+# Step 5 — Verify — should now show ~500GB available
+df -h /
+```
+
+Run all 5 commands one by one. After step 5 you should see something like:
+```
+Filesystem                         Size  Used Avail Use% Mounted on
+/dev/mapper/ubuntu--vg-ubuntu--lv  524G   11G  513G   3% /
