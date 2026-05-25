@@ -169,9 +169,16 @@ def _build_ffmpeg_command(
             audio_input_args = ["-f", "alsa", "-i", audio_device]
             map_args         = ["-map", "0:v", "-map", "1:a"]
         else:
+            video_input_args = [
+                "-f", "v4l2",
+                "-input_format", "mjpeg",      # ← tell FFmpeg to use MJPEG from card
+                "-video_size", "1280x720",     # ← explicit resolution
+                "-framerate", "30",            # ← explicit framerate
+                "-i", video_device,
+            ]
             # No audio device found — generate silent stream
-            audio_input_args = ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
-            map_args         = ["-map", "0:v", "-map", "1:a"]
+            # audio_input_args = ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
+            # map_args         = ["-map", "0:v", "-map", "1:a"]
 
     # ── Full FFmpeg command ───────────────────────────────────────────────────
     #
