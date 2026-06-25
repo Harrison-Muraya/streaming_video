@@ -172,7 +172,7 @@ def _build_ffmpeg_command(
         if audio_device:
             # ALSA audio from the HDMI capture card (e.g. hw:2,0)
             audio_input_args = [
-                "-f", "alsa","alsa",
+                "-f", "alsa",
                 "-thread_queue_size", "512",
                 "-i",
                 audio_device
