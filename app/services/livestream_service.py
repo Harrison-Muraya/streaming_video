@@ -162,11 +162,21 @@ def _build_ffmpeg_command(
 
     else:
         # Linux V4L2 video
-        video_input_args = ["-f", "v4l2", "-i", video_device]
+        video_input_args = [
+            "-f", "v4l2","-input_format", "mjpeg",
+            "-video_size", "1280x720",
+            "-framerate", "30",
+            "-thread_queue_size", "512", "-i", video_device
+        ]
 
         if audio_device:
             # ALSA audio from the HDMI capture card (e.g. hw:2,0)
-            audio_input_args = ["-f", "alsa", "-i", audio_device]
+            audio_input_args = [
+                "-f", "alsa","alsa",
+                "-thread_queue_size", "512",
+                "-i",
+                audio_device
+            ]
             map_args         = ["-map", "0:v", "-map", "1:a"]
         else:
             video_input_args = [
@@ -367,7 +377,8 @@ class LiveStreamService:
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,   # keep stderr so errors can be read later
+                # stderr=subprocess.PIPE,   # keep stderr so errors can be read later
+                stdin=subprocess.DEVNULL,   # prevent FFmpeg from blocking on input
                 creationflags=(
                     subprocess.CREATE_NO_WINDOW
                     if platform.system() == "Windows"
