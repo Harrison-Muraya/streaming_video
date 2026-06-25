@@ -106,3 +106,44 @@ Run all 5 commands one by one. After step 5 you should see something like:
 ```
 Filesystem                         Size  Used Avail Use% Mounted on
 /dev/mapper/ubuntu--vg-ubuntu--lv  524G   11G  513G   3% /
+
+
+
+
+
+cd /var/www/streaming_video && source venv/bin/activate
+
+# 1. Get a fresh token
+TOKEN=$(curl -s -X POST 'http://192.168.100.54/api/v1/auth/login' \
+  -H 'Content-Type: application/json' \
+  -d '{"username": "admin", "password": "admin123"}' | \
+  python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+# 2. Stop the stream via API
+curl -s -X POST "http://192.168.100.54/api/v1/live/admin/2/stop" \
+  -H "Authorization: Bearer $TOKEN"
+
+# 3. Kill any leftover FFmpeg processes
+sudo pkill -9 ffmpeg
+sudo fuser -k /dev/video1
+sleep 2
+
+# 4. Reset DB state (in case of stale is_live=True)
+python3 -c "
+from app.database import SessionLocal
+from app.models.livestream import LiveStream
+db = SessionLocal()
+for s in db.query(LiveStream).all():
+    s.is_live = False
+    s.ffmpeg_pid = None
+db.commit()
+db.close()
+print('All streams reset')
+"
+
+# 5. Start fresh
+curl -s -X POST "http://192.168.100.54/api/v1/live/admin/2/start" \
+  -H "Authorization: Bearer $TOKEN"
+
+sleep 5
+ls -la /var/www/streaming_video/media/live/2/
