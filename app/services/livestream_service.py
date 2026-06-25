@@ -173,9 +173,8 @@ def _build_ffmpeg_command(
             # ALSA audio from the HDMI capture card (e.g. hw:2,0)
             audio_input_args = [
                 "-f", "alsa",
-                "-thread_queue_size", "512",
-                "-i",
-                audio_device
+                "-thread_queue_size", "4096",
+                "-i", audio_device,
             ]
             map_args         = ["-map", "0:v", "-map", "1:a"]
         else:
@@ -206,23 +205,28 @@ def _build_ffmpeg_command(
         *video_input_args,
         *audio_input_args,
 
-        # Video encoding
+        # Video encoding — high quality, low latency
         "-c:v",         "libx264",
-        "-preset",      "ultrafast",
+        "-preset",      "superfast",
         "-tune",        "zerolatency",
-        "-b:v",         "1500k",
-        "-maxrate",     "1500k",
-        "-bufsize",     "1500k",
+        "-profile:v",   "high422",
+        "-level",       "4.1",
+        "-b:v",         "2500k",
+        "-maxrate",     "2500k",
+        "-bufsize",     "500k",
         "-vf",          "scale=1280:720",
         "-r",           "30",
-        "-g",           "30",        # keyframe every 1 s at 30 fps
+        "-g",           "30",
         "-keyint_min",  "30",
-        "-sc_threshold","0",         # no scene-change keyframes (keeps segments clean)
+        "-sc_threshold","0",
+        "-x264-params", "nal-hrd=cbr:force-cfr=1",
 
-        # Audio encoding
+        # Audio encoding — high quality, no scratches
         "-c:a",  "aac",
-        "-b:a",  "128k",
-        "-ar",   "44100",
+        "-b:a",  "192k",
+        "-ar",   "48000",
+        "-ac",   "2",
+        "-af",   "aresample=async=1:min_hard_comp=0.100000:first_pts=0",
 
         # Stream mapping (only present when using separate inputs)
         *map_args,
